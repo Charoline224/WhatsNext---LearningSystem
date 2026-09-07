@@ -1,0 +1,20 @@
+CREATE TABLE user_node_states (
+  user_id CHAR(36) NOT NULL,
+  learning_space_id CHAR(36) NOT NULL,
+  node_id CHAR(36) NOT NULL,
+  mastery_score DECIMAL(5,2) NOT NULL DEFAULT 0,
+  mastery_status VARCHAR(20) NOT NULL DEFAULT 'unassessed',
+  correct_count INT UNSIGNED NOT NULL DEFAULT 0,
+  wrong_count INT UNSIGNED NOT NULL DEFAULT 0,
+  evidence_count INT UNSIGNED NOT NULL DEFAULT 0,
+  confidence DECIMAL(4,3) NOT NULL DEFAULT 0,
+  last_evaluated_at DATETIME(6) NULL,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY(user_id,node_id),
+  KEY idx_user_node_states_space(user_id,learning_space_id,mastery_status),
+  CONSTRAINT fk_user_node_states_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_user_node_states_space FOREIGN KEY(learning_space_id) REFERENCES learning_spaces(id) ON DELETE CASCADE,
+  CONSTRAINT fk_user_node_states_node FOREIGN KEY(node_id) REFERENCES learning_nodes(id) ON DELETE CASCADE,
+  CONSTRAINT chk_mastery_status CHECK(mastery_status IN ('unassessed','weak','learning','mastered'))
+);

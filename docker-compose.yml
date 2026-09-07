@@ -1,0 +1,156 @@
+name: whatsnext
+
+services:
+  mysql:
+    image: mysql:8.4
+    command: ["--port=3307"]
+    environment:
+      MYSQL_DATABASE: whatsnext
+      MYSQL_USER: whatsnext
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-whatsnext_dev}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-whatsnext_root_dev}
+      TZ: UTC
+    ports:
+      - "3307:3307"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -P 3307 -uwhatsnext -p$$MYSQL_PASSWORD --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-whatsnext}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-whatsnext_minio_dev}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.4
+    ports:
+      - "${QDRANT_HTTP_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  migrate:
+    image: migrate/migrate:v4.18.3
+    profiles: ["tools"]
+    volumes:
+      - ./backend/migrations:/migrations:ro
+    command:
+      - -path=/migrations
+      - -database=mysql://whatsnext:${MYSQL_PASSWORD:-whatsnext_dev}@tcp(mysql:3307)/whatsnext
+      - up
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ./backend
+      args:
+        TARGET: api
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    environment: &backend-environment
+      APP_ENV: development
+      LOG_LEVEL: debug
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: 8080
+      FRONTEND_ORIGIN: http://localhost:5173
+      MYSQL_DSN: whatsnext:${MYSQL_PASSWORD:-whatsnext_dev}@tcp(mysql:3307)/whatsnext?charset=utf8mb4&parseTime=true&loc=UTC
+      REDIS_ADDRESS: redis:6379
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-whatsnext}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-whatsnext_minio_dev}
+      MINIO_BUCKET: whatsnext-materials
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-104857600}
+      MAX_PDF_PAGES: ${MAX_PDF_PAGES:-500}
+      PDF_OCR_ENABLED: ${PDF_OCR_ENABLED:-true}
+      PDF_OCR_LANGUAGES: ${PDF_OCR_LANGUAGES:-chi_sim+eng}
+      PDF_OCR_DPI: ${PDF_OCR_DPI:-200}
+      PDF_OCR_WORKERS: ${PDF_OCR_WORKERS:-4}
+      PDF_OCR_PAGE_TIMEOUT: ${PDF_OCR_PAGE_TIMEOUT:-45s}
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-material_chunks}
+      QDRANT_TIMEOUT: ${QDRANT_TIMEOUT:-10s}
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-development-only-signing-key-change-me}
+      BAILIAN_BASE_URL: ${BAILIAN_BASE_URL:-}
+      BAILIAN_API_KEY: ${BAILIAN_API_KEY:-}
+      AI_GENERATION_MODEL: ${AI_GENERATION_MODEL:-qwen3.7-plus}
+      AI_CHEAP_MODEL: ${AI_CHEAP_MODEL:-qwen3.6-flash}
+      AI_GENERATION_TIMEOUT: ${AI_GENERATION_TIMEOUT:-5m}
+      AI_EMBEDDING_MODEL: ${AI_EMBEDDING_MODEL:-text-embedding-v4}
+      AI_EMBEDDING_DIMENSIONS: ${AI_EMBEDDING_DIMENSIONS:-1024}
+      AI_EMBEDDING_BATCH_SIZE: ${AI_EMBEDDING_BATCH_SIZE:-10}
+      AI_EMBEDDING_TIMEOUT: ${AI_EMBEDDING_TIMEOUT:-30s}
+      AI_MOCK_EMBEDDING: ${AI_MOCK_EMBEDDING:-true}
+      AI_MOCK_GENERATION: ${AI_MOCK_GENERATION:-true}
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+      args:
+        TARGET: worker
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    environment: *backend-environment
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+  redis_data:
+  minio_data:
+  qdrant_data:

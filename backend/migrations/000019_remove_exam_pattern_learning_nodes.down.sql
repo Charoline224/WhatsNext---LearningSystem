@@ -1,0 +1,1 @@
+-- Removed generated exam-pattern nodes cannot be reconstructed safely.

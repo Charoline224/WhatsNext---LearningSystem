@@ -1,0 +1,21 @@
+CREATE TABLE plan_stages (
+    id CHAR(36) NOT NULL,
+    user_id CHAR(36) NOT NULL,
+    learning_space_id CHAR(36) NOT NULL,
+    plan_id CHAR(36) NOT NULL,
+    focus_node_id CHAR(36) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    description VARCHAR(1000) NOT NULL,
+    stage_status VARCHAR(20) NOT NULL,
+    estimated_days SMALLINT UNSIGNED NOT NULL,
+    sort_order SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    KEY idx_plan_stages_order (plan_id, sort_order),
+    CONSTRAINT fk_plan_stages_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+    CONSTRAINT fk_plan_stages_space FOREIGN KEY (learning_space_id) REFERENCES learning_spaces (id) ON DELETE CASCADE,
+    CONSTRAINT fk_plan_stages_plan FOREIGN KEY (plan_id) REFERENCES learning_plans (id) ON DELETE CASCADE,
+    CONSTRAINT fk_plan_stages_node FOREIGN KEY (focus_node_id) REFERENCES learning_nodes (id) ON DELETE CASCADE,
+    CONSTRAINT chk_plan_stages_status CHECK (stage_status IN ('pending', 'active', 'complete')),
+    CONSTRAINT chk_plan_stages_days CHECK (estimated_days > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

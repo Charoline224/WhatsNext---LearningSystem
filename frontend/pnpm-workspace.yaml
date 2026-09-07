@@ -1,0 +1,4 @@
+allowBuilds:
+  '@parcel/watcher': true
+  msw: true
+  vue-demi: true
