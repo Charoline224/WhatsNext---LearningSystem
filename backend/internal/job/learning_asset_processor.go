@@ -28,9 +28,13 @@ func (p *LearningAssetProcessor) Process(ctx context.Context, jobID string) erro
 	if err == nil && job.JobType == "knowledge_assets" {
 		var sources []ai.AssetSource
 		sources, err = p.repo.IndexedSources(ctx, job.UserID, job.LearningSpaceID)
+		var existingNodes []ai.ExistingKnowledgeNode
+		if err == nil {
+			existingNodes, err = p.repo.MergeableExamKnowledgeNodes(ctx, job.UserID, job.LearningSpaceID)
+		}
 		var assets ai.GeneratedAssets
 		if err == nil {
-			assets, err = p.knowledgeGenerator.GenerateKnowledge(ctx, space.Goal, sources)
+			assets, err = p.knowledgeGenerator.GenerateKnowledge(ctx, space.Goal, sources, existingNodes)
 		}
 		if err == nil {
 			err = p.repo.CompleteKnowledge(ctx, job, assets)

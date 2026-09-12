@@ -116,6 +116,7 @@ type knowledgeOutput struct {
 		Name, Description, SourceChunkID string
 		ExamWeight                       float64
 		EstimatedMinutes                 int
+		AbsorbedNodeIDs                  []string
 	} `json:"nodes"`
 	Edges []struct {
 		From, To     int
@@ -127,18 +128,53 @@ type knowledgeOutput struct {
 	} `json:"articles"`
 }
 
-func (b *BailianChat) GenerateKnowledge(ctx context.Context, goal string, sources []AssetSource) (GeneratedAssets, error) {
+type knowledgeGranularityAudit struct {
+	SameLevel bool `json:"sameLevel"`
+	Conflicts []struct {
+		BroaderNode  int    `json:"broaderNode"`
+		NarrowerNode int    `json:"narrowerNode"`
+		Reason       string `json:"reason"`
+	} `json:"conflicts"`
+}
+
+func (b *BailianChat) GenerateKnowledge(ctx context.Context, goal string, sources []AssetSource, existingNodes []ExistingKnowledgeNode) (GeneratedAssets, error) {
 	if len(sources) == 0 {
 		return GeneratedAssets{}, fmt.Errorf("no indexed sources")
 	}
 	sources = sampleAssetSources(sources, 12)
-	input, err := marshalPrompt(map[string]any{"goal": goal, "sources": sources})
+	input, err := marshalPrompt(map[string]any{"goal": goal, "sources": sources, "existingExamNodes": existingNodes})
 	if err != nil {
 		return GeneratedAssets{}, err
 	}
-	content, err := b.complete(ctx, b.generationModel, `根据资料生成“少而核心”的分层知识图和知识手册。先合并同义、上下位过细和可以在同一章节讲清的概念，只保留理解课程所必需的核心知识。知识点通常为 6-12 个，绝对不能超过 12 个；资料较少时可以更少。不要把学习目标、分数、具体题目、题型、解题步骤或考试年份作为知识节点。图必须是一个连通结构，每个节点都至少关联另一个节点；优先使用 contains 表达章节层级、prerequisite 表达学习顺序，只有确有直接概念联系时才使用 related，禁止为了凑边而建立弱关联。边数至少为节点数减一。
+	draftContent, err := b.complete(ctx, b.generationModel, `根据资料提取“少而核心”的知识点候选和知识手册草稿。知识点通常为 6-12 个，绝对不能超过 12 个；资料较少时可以更少。不要把学习目标、分数、具体题目、题型、解题步骤或考试年份作为知识节点。
 
-只输出 JSON 对象：{"nodes":[{"name":"","description":"","sourceChunkID":"原始chunk_id","examWeight":0.0,"estimatedMinutes":20}],"edges":[{"from":0,"to":1,"relationType":"prerequisite|related|contains"}],"articles":[{"node":0,"title":"","body":"","sourceChunkID":"原始chunk_id"}]}。索引必须有效，权重范围0到1，不得虚构 sourceChunkID。手册中的所有数学公式必须使用标准 LaTeX：行内公式使用 $...$，独立公式使用 $$...$$；指数必须使用 ^{...}，下标必须使用 _{...}，不要输出无定界符的裸公式。`, input, true)
+	输入中的 existingExamNodes 是真题分析曾提前建立的知识点，必须和资料候选放在一起比较粒度，不能把它们当作额外节点照单全收。
+
+只输出 JSON 对象：{"nodes":[{"name":"","description":"","sourceChunkID":"原始chunk_id","examWeight":0.0,"estimatedMinutes":20,"absorbedNodeIDs":["existingExamNodes 中的 id"]}],"edges":[{"from":0,"to":1,"relationType":"prerequisite|related"}],"articles":[{"node":0,"title":"","body":"","sourceChunkID":"原始chunk_id"}]}。索引必须有效，权重范围0到1，不得虚构 sourceChunkID。`, input, true)
+	if err != nil {
+		return GeneratedAssets{}, err
+	}
+	var draft knowledgeOutput
+	if err = decodeModelJSON(draftContent, &draft); err != nil {
+		return GeneratedAssets{}, err
+	}
+	normalizeInput, err := marshalPrompt(map[string]any{"goal": goal, "sources": sources, "existingExamNodes": existingNodes, "draft": draft})
+	if err != nil {
+		return GeneratedAssets{}, err
+	}
+	content, err := b.complete(ctx, b.generationModel, `你是知识架构审校器。将草稿强制归一化为“同一粒度、同一层级”的最终知识图和手册。
+
+必须遵守：
+1. 所有节点都必须是可独立学习、复习和出题的核心知识单元，抽象粒度必须一致。
+2. 任意两个节点不得存在上位/下位、整体/部分或章节/小节关系。若 A 涵盖 B，必须根据草稿中多数节点的粒度选择一层：删除 A 并保留与 B 同粒度的节点，或合并所有过细节点为与 A 同粒度的节点；不能同时保留。
+3. 课程名、章节名、领域总称和纯分类标签不能作为节点。它们的必要总览应分配进具体知识单元的手册正文。
+4. 合并同义、重叠或可在同一节讲清的候选。最终通常 6-12 个，绝对不超过 12 个。
+5. 关系只允许 prerequisite 和 related。禁止 contains，因为最终节点不应有包含关系。图必须弱连通，每个节点至少有一条有意义的关系。
+6. 每个节点必须恰好有一篇手册文章，文章要讲清定义、核心机制、适用条件和与相邻知识点的边界。
+7. 输出前逐对检查节点；只要仍有一对存在涵盖关系，就继续合并或拆分，不得输出。
+8. existingExamNodes 必须参与上述逐对审查。每个旧节点 id 必须准确出现在某一个最终节点的 absorbedNodeIDs 中，且只能出现一次。例如“微分学基础”与“微分的概念”存在涵盖时，不得并列保留；应将后者归并到与其他最终节点粒度一致的节点中。
+
+只输出最终 JSON 对象：{"nodes":[{"name":"","description":"","sourceChunkID":"原始chunk_id","examWeight":0.0,"estimatedMinutes":20,"absorbedNodeIDs":["existingExamNodes 中的 id"]}],"edges":[{"from":0,"to":1,"relationType":"prerequisite|related"}],"articles":[{"node":0,"title":"","body":"","sourceChunkID":"原始chunk_id"}]}。节点和文章索引必须有效，权重范围 0 到 1，不得虚构 sourceChunkID。手册中的数学公式必须使用标准 LaTeX：行内公式使用 $...$，独立公式使用 $$...$$；指数使用 ^{...}，下标使用 _{...}。`, normalizeInput, true)
 	if err != nil {
 		return GeneratedAssets{}, err
 	}
@@ -146,34 +182,125 @@ func (b *BailianChat) GenerateKnowledge(ctx context.Context, goal string, source
 	if err = decodeModelJSON(content, &out); err != nil {
 		return GeneratedAssets{}, err
 	}
+	result, err := validateKnowledgeOutput(out, sources, existingNodes)
+	if err != nil {
+		return GeneratedAssets{}, err
+	}
+	audit, err := b.auditKnowledgeGranularity(ctx, result.Nodes)
+	if err != nil {
+		return GeneratedAssets{}, err
+	}
+	if audit.SameLevel && len(audit.Conflicts) == 0 {
+		return result, nil
+	}
+	if len(audit.Conflicts) == 0 {
+		return GeneratedAssets{}, fmt.Errorf("knowledge granularity audit failed without actionable conflicts")
+	}
+	correctionInput, err := marshalPrompt(map[string]any{
+		"goal":              goal,
+		"sources":           sources,
+		"existingExamNodes": existingNodes,
+		"current":           out,
+		"conflicts":         audit.Conflicts,
+	})
+	if err != nil {
+		return GeneratedAssets{}, err
+	}
+	correctedContent, err := b.complete(ctx, b.generationModel, `你是知识图粒度修复器。独立审查已指出 current 中存在上位节点涵盖下位节点的 conflicts。必须针对每一对冲突进行合并、删除或同粒度重命名，不得只改关系类型或文字解释。修复后任意两个节点都不得存在整体/部分、章节/小节、基础总论/具体概念关系。保持图弱连通，只允许 prerequisite 和 related。existingExamNodes 的每个 id 仍必须在 absorbedNodeIDs 中恰好出现一次。
+
+只输出修复后的 JSON：{"nodes":[{"name":"","description":"","sourceChunkID":"原始chunk_id","examWeight":0.0,"estimatedMinutes":20,"absorbedNodeIDs":["旧节点id"]}],"edges":[{"from":0,"to":1,"relationType":"prerequisite|related"}],"articles":[{"node":0,"title":"","body":"","sourceChunkID":"原始chunk_id"}]}。`, correctionInput, true)
+	if err != nil {
+		return GeneratedAssets{}, err
+	}
+	var corrected knowledgeOutput
+	if err = decodeModelJSON(correctedContent, &corrected); err != nil {
+		return GeneratedAssets{}, err
+	}
+	result, err = validateKnowledgeOutput(corrected, sources, existingNodes)
+	if err != nil {
+		return GeneratedAssets{}, err
+	}
+	audit, err = b.auditKnowledgeGranularity(ctx, result.Nodes)
+	if err != nil {
+		return GeneratedAssets{}, err
+	}
+	if !audit.SameLevel || len(audit.Conflicts) > 0 {
+		return GeneratedAssets{}, fmt.Errorf("knowledge nodes remain at mixed granularity after correction")
+	}
+	return result, nil
+}
+
+func (b *BailianChat) auditKnowledgeGranularity(ctx context.Context, nodes []GeneratedNode) (knowledgeGranularityAudit, error) {
+	input, err := marshalPrompt(map[string]any{"nodes": nodes})
+	if err != nil {
+		return knowledgeGranularityAudit{}, err
+	}
+	content, err := b.complete(ctx, b.cheapModel, `你是独立的知识点粒度质检员。对输入节点进行两两语义比较，判断是否全部处于同一抽象层级。名称不同不代表同层级；重点查找“基础/总论/概述/某学”与其具体概念并列、整体机制与子机制并列、上位学科与具体方法并列。例如“微分学基础”与“微分的概念”不在同一层级。
+
+只输出 JSON：{"sameLevel":true,"conflicts":[]}。若存在冲突，输出 {"sameLevel":false,"conflicts":[{"broaderNode":0,"narrowerNode":1,"reason":""}]}，索引必须引用输入 nodes。`, input, true)
+	if err != nil {
+		return knowledgeGranularityAudit{}, err
+	}
+	var audit knowledgeGranularityAudit
+	if err = decodeModelJSON(content, &audit); err != nil {
+		return knowledgeGranularityAudit{}, err
+	}
+	for _, conflict := range audit.Conflicts {
+		if conflict.BroaderNode < 0 || conflict.BroaderNode >= len(nodes) || conflict.NarrowerNode < 0 || conflict.NarrowerNode >= len(nodes) || conflict.BroaderNode == conflict.NarrowerNode {
+			return knowledgeGranularityAudit{}, fmt.Errorf("granularity audit returned invalid conflict indexes")
+		}
+	}
+	return audit, nil
+}
+
+func validateKnowledgeOutput(out knowledgeOutput, sources []AssetSource, existingNodes []ExistingKnowledgeNode) (GeneratedAssets, error) {
 	allowedSources := map[string]bool{}
 	for _, source := range sources {
 		allowedSources[source.ChunkID] = true
 	}
 	result := GeneratedAssets{}
+	existingIDs := make(map[string]bool, len(existingNodes))
+	for _, node := range existingNodes {
+		existingIDs[node.ID] = true
+	}
+	absorbedIDs := make(map[string]bool, len(existingNodes))
 	for _, node := range out.Nodes {
 		if strings.TrimSpace(node.Name) == "" || !allowedSources[node.SourceChunkID] || node.ExamWeight < 0 || node.ExamWeight > 1 || node.EstimatedMinutes <= 0 {
 			return GeneratedAssets{}, fmt.Errorf("model returned invalid knowledge node")
 		}
-		result.Nodes = append(result.Nodes, GeneratedNode{Name: node.Name, Description: node.Description, SourceChunkID: node.SourceChunkID, ExamWeight: node.ExamWeight, EstimatedMinutes: node.EstimatedMinutes})
+		for _, absorbedID := range node.AbsorbedNodeIDs {
+			if !existingIDs[absorbedID] || absorbedIDs[absorbedID] {
+				return GeneratedAssets{}, fmt.Errorf("model returned invalid absorbed knowledge node")
+			}
+			absorbedIDs[absorbedID] = true
+		}
+		result.Nodes = append(result.Nodes, GeneratedNode{Name: node.Name, Description: node.Description, SourceChunkID: node.SourceChunkID, ExamWeight: node.ExamWeight, EstimatedMinutes: node.EstimatedMinutes, AbsorbedNodeIDs: node.AbsorbedNodeIDs})
+	}
+	if len(absorbedIDs) != len(existingIDs) {
+		return GeneratedAssets{}, fmt.Errorf("model did not reconcile every existing exam knowledge node")
 	}
 	if len(result.Nodes) == 0 || len(result.Nodes) > 12 {
 		return GeneratedAssets{}, fmt.Errorf("model returned an invalid number of knowledge nodes")
 	}
 	for _, edge := range out.Edges {
-		if edge.From < 0 || edge.From >= len(result.Nodes) || edge.To < 0 || edge.To >= len(result.Nodes) || (edge.RelationType != "prerequisite" && edge.RelationType != "related" && edge.RelationType != "contains") {
+		if edge.From < 0 || edge.From >= len(result.Nodes) || edge.To < 0 || edge.To >= len(result.Nodes) || (edge.RelationType != "prerequisite" && edge.RelationType != "related") {
 			return GeneratedAssets{}, fmt.Errorf("model returned invalid knowledge edge")
 		}
 		result.Edges = append(result.Edges, GeneratedEdge{From: edge.From, To: edge.To, RelationType: edge.RelationType})
 	}
-	if err = validateKnowledgeGraph(len(result.Nodes), result.Edges); err != nil {
+	if err := validateKnowledgeGraph(len(result.Nodes), result.Edges); err != nil {
 		return GeneratedAssets{}, err
 	}
+	articleNodes := make(map[int]bool, len(out.Articles))
 	for _, article := range out.Articles {
-		if article.Node < 0 || article.Node >= len(result.Nodes) || strings.TrimSpace(article.Body) == "" || !allowedSources[article.SourceChunkID] {
+		if article.Node < 0 || article.Node >= len(result.Nodes) || articleNodes[article.Node] || strings.TrimSpace(article.Body) == "" || !allowedSources[article.SourceChunkID] {
 			return GeneratedAssets{}, fmt.Errorf("model returned invalid knowledge article")
 		}
+		articleNodes[article.Node] = true
 		result.Articles = append(result.Articles, GeneratedArticle{Node: article.Node, Title: article.Title, Body: article.Body, SourceChunkID: article.SourceChunkID})
+	}
+	if len(articleNodes) != len(result.Nodes) {
+		return GeneratedAssets{}, fmt.Errorf("model did not return exactly one article per knowledge node")
 	}
 	return result, nil
 }
@@ -188,6 +315,9 @@ func validateKnowledgeGraph(nodeCount int, edges []GeneratedEdge) error {
 	adjacency := make([][]int, nodeCount)
 	seenEdges := make(map[[2]int]bool, len(edges))
 	for _, edge := range edges {
+		if edge.RelationType != "prerequisite" && edge.RelationType != "related" {
+			return fmt.Errorf("model returned a hierarchical knowledge edge")
+		}
 		if edge.From == edge.To {
 			return fmt.Errorf("model returned a self-referencing knowledge edge")
 		}

@@ -6,7 +6,7 @@ import (
 )
 
 func TestMockAssetGeneratorBuildsAllThreeAssets(t *testing.T) {
-	assets, err := (MockAssetGenerator{}).GenerateKnowledge(context.Background(), "通过考试", []AssetSource{{ChunkID: "chunk", Content: "# TCP 可靠传输\n序号、确认和重传保证可靠性。"}})
+	assets, err := (MockAssetGenerator{}).GenerateKnowledge(context.Background(), "通过考试", []AssetSource{{ChunkID: "chunk", Content: "# TCP 可靠传输\n序号、确认和重传保证可靠性。"}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +20,7 @@ func TestMockAssetGeneratorBuildsAllThreeAssets(t *testing.T) {
 
 func TestMockAssetGeneratorBuildsBranchingGraph(t *testing.T) {
 	sources := []AssetSource{{ChunkID: "a", Content: "A"}, {ChunkID: "b", Content: "B"}, {ChunkID: "c", Content: "C"}}
-	assets, err := (MockAssetGenerator{}).GenerateKnowledge(context.Background(), "goal", sources)
+	assets, err := (MockAssetGenerator{}).GenerateKnowledge(context.Background(), "goal", sources, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,15 +60,22 @@ func TestMockPlanPrioritizesWeakHighWeightMaterialNode(t *testing.T) {
 }
 
 func TestValidateKnowledgeGraphRejectsDisconnectedNodes(t *testing.T) {
-	err := validateKnowledgeGraph(4, []GeneratedEdge{{From: 0, To: 1, RelationType: "contains"}, {From: 2, To: 3, RelationType: "related"}, {From: 0, To: 1, RelationType: "prerequisite"}})
+	err := validateKnowledgeGraph(4, []GeneratedEdge{{From: 0, To: 1, RelationType: "related"}, {From: 2, To: 3, RelationType: "related"}})
 	if err == nil {
 		t.Fatal("expected disconnected graph to be rejected")
 	}
 }
 
-func TestValidateKnowledgeGraphAcceptsConnectedHierarchy(t *testing.T) {
-	err := validateKnowledgeGraph(4, []GeneratedEdge{{From: 0, To: 1, RelationType: "contains"}, {From: 0, To: 2, RelationType: "contains"}, {From: 2, To: 3, RelationType: "prerequisite"}})
+func TestValidateKnowledgeGraphAcceptsConnectedPeerGraph(t *testing.T) {
+	err := validateKnowledgeGraph(4, []GeneratedEdge{{From: 0, To: 1, RelationType: "related"}, {From: 0, To: 2, RelationType: "prerequisite"}, {From: 2, To: 3, RelationType: "related"}})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidateKnowledgeGraphRejectsContainsRelationship(t *testing.T) {
+	err := validateKnowledgeGraph(2, []GeneratedEdge{{From: 0, To: 1, RelationType: "contains"}})
+	if err == nil {
+		t.Fatal("expected hierarchical relationship to be rejected")
 	}
 }

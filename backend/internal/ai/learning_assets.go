@@ -12,10 +12,16 @@ type AssetSource struct {
 	ChunkID string `db:"chunk_id"`
 	Content string `db:"content"`
 }
+type ExistingKnowledgeNode struct {
+	ID          string `db:"id" json:"id"`
+	Name        string `db:"name" json:"name"`
+	Description string `db:"description" json:"description"`
+}
 type GeneratedNode struct {
 	Name, Description, SourceChunkID string
 	ExamWeight                       float64
 	EstimatedMinutes                 int
+	AbsorbedNodeIDs                  []string
 }
 type GeneratedEdge struct {
 	From, To     int
@@ -74,7 +80,7 @@ type PlanSignal struct {
 }
 
 type KnowledgeAssetGenerator interface {
-	GenerateKnowledge(context.Context, string, []AssetSource) (GeneratedAssets, error)
+	GenerateKnowledge(context.Context, string, []AssetSource, []ExistingKnowledgeNode) (GeneratedAssets, error)
 }
 type LearningPlanGenerator interface {
 	GeneratePlan(context.Context, PlanContext, []PlanSource, []PlanSignal) (GeneratedPlan, error)
@@ -83,14 +89,14 @@ type LearningPlanGenerator interface {
 type MockAssetGenerator struct{}
 type UnavailableAssetGenerator struct{}
 
-func (UnavailableAssetGenerator) GenerateKnowledge(context.Context, string, []AssetSource) (GeneratedAssets, error) {
+func (UnavailableAssetGenerator) GenerateKnowledge(context.Context, string, []AssetSource, []ExistingKnowledgeNode) (GeneratedAssets, error) {
 	return GeneratedAssets{}, fmt.Errorf("generation provider is not configured")
 }
 func (UnavailableAssetGenerator) GeneratePlan(context.Context, PlanContext, []PlanSource, []PlanSignal) (GeneratedPlan, error) {
 	return GeneratedPlan{}, fmt.Errorf("generation provider is not configured")
 }
 
-func (MockAssetGenerator) GenerateKnowledge(ctx context.Context, goal string, sources []AssetSource) (GeneratedAssets, error) {
+func (MockAssetGenerator) GenerateKnowledge(ctx context.Context, goal string, sources []AssetSource, existingNodes []ExistingKnowledgeNode) (GeneratedAssets, error) {
 	if len(sources) == 0 {
 		return GeneratedAssets{}, fmt.Errorf("no indexed sources")
 	}
@@ -113,6 +119,9 @@ func (MockAssetGenerator) GenerateKnowledge(ctx context.Context, goal string, so
 		result.Nodes = append(result.Nodes, GeneratedNode{Name: name, Description: description, SourceChunkID: source.ChunkID, ExamWeight: max(0.5, 0.95-float64(i)*0.04), EstimatedMinutes: minutes})
 		result.Articles = append(result.Articles, GeneratedArticle{Node: i, Title: name, Body: fmt.Sprintf("学习目标：%s\n\n%s\n\n建议：结合原始资料完成理解、复述和自测。", goal, description), SourceChunkID: source.ChunkID})
 	}
+	for i, existing := range existingNodes {
+		result.Nodes[i%len(result.Nodes)].AbsorbedNodeIDs = append(result.Nodes[i%len(result.Nodes)].AbsorbedNodeIDs, existing.ID)
+	}
 	// Build a small directed acyclic graph instead of a synthetic linear chain:
 	// each concept can unlock two children, while siblings remain related.
 	for i := 1; i < len(result.Nodes); i++ {
@@ -121,9 +130,6 @@ func (MockAssetGenerator) GenerateKnowledge(ctx context.Context, goal string, so
 		if i%2 == 0 {
 			result.Edges = append(result.Edges, GeneratedEdge{From: i - 1, To: i, RelationType: "related"})
 		}
-	}
-	if len(result.Nodes) > 3 {
-		result.Edges = append(result.Edges, GeneratedEdge{From: 0, To: len(result.Nodes) - 1, RelationType: "contains"})
 	}
 	return result, nil
 }

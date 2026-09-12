@@ -478,13 +478,15 @@ Job 状态：`queued | running | succeeded | failed | cancelled`。
 
 知识地图与手册在同一 MySQL 事务中替换；学习计划在后续独立事务中生成。
 
+生成时会将资料候选与真题分析已识别的知识节点放入同一次全图粒度审校。每个未编辑的真题节点必须归并到唯一最终节点，题型关联、问答信号和掌握度随之迁移。人工编辑节点不会被自动删除。
+
 ### 知识地图编辑 API
 
 - `POST /spaces/{space_id}/knowledge-map/nodes`：新增节点，同时创建可继续编辑的手册章节。
 - `PATCH /spaces/{space_id}/knowledge-map/nodes/{node_id}`：修改名称、类型、描述、权重和预计时间。
 - `PATCH /spaces/{space_id}/knowledge-map/nodes/{node_id}/position`：持久化节点在画布中的坐标。
 - `DELETE /spaces/{space_id}/knowledge-map/nodes/{node_id}`：删除节点及关系，并使当前计划失效。
-- `POST /spaces/{space_id}/knowledge-map/edges`：新增 `prerequisite | related | contains` 关系。
+- `POST /spaces/{space_id}/knowledge-map/edges`：新增 `prerequisite | related` 关系。知识地图中的节点必须保持同一粒度，不接受包含关系。
 - `DELETE /spaces/{space_id}/knowledge-map/edges/{edge_id}`：删除关系。
 
 人工修改的节点和关系会记录 `user_edited=true`，重新生成时按节点合并并保留这些修改。
@@ -567,7 +569,7 @@ Job 状态：`queued | running | succeeded | failed | cancelled`。
 }
 ```
 
-关系类型：`prerequisite | related | contains`。对有向关系进行环检测，违反约束返回 `409`。
+关系类型：`prerequisite | related`。对有向关系进行环检测，违反约束返回 `409`。
 
 ### `DELETE /spaces/{space_id}/edges/{edge_id}`
 

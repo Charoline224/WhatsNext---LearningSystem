@@ -160,7 +160,7 @@ Handler → Service → Repository → MySQL
 ### 6.4 知识图
 
 - `learning_nodes`：知识、技能、练习、里程碑或项目。
-- `learning_edges`：`prerequisite`、`related` 或 `contains` 关系。
+- `learning_edges`：只保存同层级知识点之间的 `prerequisite` 或 `related` 关系；禁止生成具有包含关系的上下位节点。
 - `node_evidences`：节点与原始资料分块的来源关系。
 - `knowledge_articles`：节点级知识手册，保存生成版本及用户编辑标记。
 
@@ -205,6 +205,8 @@ Handler → Service → Repository → MySQL
 - 不低于 `0.92`：强候选，仍需模型置信度不低于 `0.90`、节点类型和上下文兼容，并由用户确认。
 - MVP 不执行无人确认的自动合并。
 - 阈值在积累真实确认数据后通过评测调整。
+
+知识成果生成采用“候选提取 → 全图粒度审校”两阶段流程。审校同时输入真题分析提前产生的临时知识节点，每个临时节点必须且只能归并到一个最终同层级节点。归并会迁移题型关联、问答信号和作答掌握度，避免“微分学基础”与“微分的概念”这类上下位节点并列。
 
 ### 7.3 Planner
 

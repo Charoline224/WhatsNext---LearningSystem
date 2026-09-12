@@ -18,7 +18,6 @@ const { fitView } = useVueFlow()
 const relationStyles = {
   prerequisite: { label: '前置', color: '#1a2744', dash: undefined },
   related: { label: '相关', color: '#4a5c3a', dash: '7 6' },
-  contains: { label: '包含', color: '#566173', dash: '3 5' },
 } as const
 
 watch(
@@ -101,7 +100,6 @@ function handleNodeDragStop(event: { node: Node }) { emit('nodePosition',event.n
     <div class="graph-legend">
       <span><i class="prerequisite" />前置</span>
       <span><i class="related" />相关</span>
-      <span><i class="contains" />包含</span>
     </div>
 	<button class="graph-layout-action" type="button" @click="resetLayout">自动排布</button>
   </div>
@@ -121,7 +119,6 @@ function handleNodeDragStop(event: { node: Node }) { emit('nodePosition',event.n
 .graph-legend i { width: 1.125rem; border-top: 3px solid; }
 .graph-legend .prerequisite { border-color: #1a2744; }
 .graph-legend .related { border-color: #4a5c3a; border-top-style: dashed; }
-.graph-legend .contains { border-color: #566173; border-top-style: dotted; }
 .graph-layout-action { position: absolute; left: 12px; bottom: 12px; z-index: 6; padding: 8px 12px; border: 2px solid #4a5c3a; background: #fff; color: #172033; font-weight: 700; cursor: pointer; box-shadow: 2px 2px 0 rgba(251,191,36,.45); }
 .graph-layout-action:hover { background: #fbbf24; }
 :deep(.vue-flow__node) { border: 0; padding: 0; background: transparent; }

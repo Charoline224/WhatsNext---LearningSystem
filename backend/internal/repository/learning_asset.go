@@ -112,6 +112,15 @@ func (r *LearningAssetRepository) IndexedSources(ctx context.Context, userID, sp
 	err := r.db.SelectContext(ctx, &items, `SELECT mc.id AS chunk_id,mc.content FROM material_chunks mc JOIN chunk_embeddings ce ON ce.chunk_id=mc.id WHERE mc.user_id=? AND mc.learning_space_id=? AND ce.status='indexed' ORDER BY mc.created_at,mc.chunk_index`, userID, spaceID)
 	return items, err
 }
+
+// MergeableExamKnowledgeNodes returns provisional nodes created while exam
+// material is processed. They must participate in the next whole-map
+// granularity review instead of surviving beside the generated course nodes.
+func (r *LearningAssetRepository) MergeableExamKnowledgeNodes(ctx context.Context, userID, spaceID string) ([]ai.ExistingKnowledgeNode, error) {
+	items := []ai.ExistingKnowledgeNode{}
+	err := r.db.SelectContext(ctx, &items, `SELECT DISTINCT n.id,n.name,n.description FROM learning_nodes n JOIN exam_pattern_node_links l ON l.node_id=n.id LEFT JOIN knowledge_articles a ON a.node_id=n.id WHERE n.user_id=? AND n.learning_space_id=? AND n.user_edited=FALSE AND COALESCE(a.user_edited,FALSE)=FALSE AND NOT EXISTS (SELECT 1 FROM learning_edges e WHERE (e.from_node_id=n.id OR e.to_node_id=n.id) AND e.user_edited=TRUE) ORDER BY n.sort_order,n.name`, userID, spaceID)
+	return items, err
+}
 func (r *LearningAssetRepository) CountIndexedSources(ctx context.Context, userID, spaceID string) (int, error) {
 	var n int
 	err := r.db.GetContext(ctx, &n, `SELECT COUNT(*) FROM chunk_embeddings WHERE user_id=? AND learning_space_id=? AND status='indexed'`, userID, spaceID)
@@ -276,11 +285,62 @@ func (r *LearningAssetRepository) CompleteKnowledge(ctx context.Context, job mod
 			return err
 		}
 	}
+	for i, node := range assets.Nodes {
+		if len(node.AbsorbedNodeIDs) == 0 {
+			continue
+		}
+		for _, oldNodeID := range node.AbsorbedNodeIDs {
+			if _, err = tx.ExecContext(ctx, `UPDATE chat_learning_signals SET related_node_id=? WHERE related_node_id=? AND user_id=? AND learning_space_id=?`, nodeIDs[i], oldNodeID, job.UserID, job.LearningSpaceID); err != nil {
+				return fmt.Errorf("transfer learning signals: %w", err)
+			}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO exam_pattern_node_links(pattern_id,node_id,confidence,relation_reason,source) SELECT pattern_id,?,confidence,CONCAT(relation_reason,'；已归并至同层级知识点'),source FROM exam_pattern_node_links WHERE node_id=? ON DUPLICATE KEY UPDATE confidence=GREATEST(exam_pattern_node_links.confidence,VALUES(confidence)),relation_reason=VALUES(relation_reason)`, nodeIDs[i], oldNodeID); err != nil {
+				return fmt.Errorf("transfer exam pattern links: %w", err)
+			}
+			if _, err = tx.ExecContext(ctx, `DELETE FROM exam_pattern_node_links WHERE node_id=?`, oldNodeID); err != nil {
+				return fmt.Errorf("remove superseded exam pattern links: %w", err)
+			}
+		}
+		if err = refreshNodeMastery(ctx, tx, job.UserID, job.LearningSpaceID, nodeIDs[i]); err != nil {
+			return err
+		}
+		for _, oldNodeID := range node.AbsorbedNodeIDs {
+			if _, err = tx.ExecContext(ctx, `DELETE FROM learning_nodes WHERE id=? AND user_id=? AND learning_space_id=? AND user_edited=FALSE`, oldNodeID, job.UserID, job.LearningSpaceID); err != nil {
+				return fmt.Errorf("delete absorbed exam knowledge node: %w", err)
+			}
+		}
+	}
 	_, err = tx.ExecContext(ctx, `UPDATE learning_asset_jobs SET status='succeeded',progress=100,completed_at=? WHERE id=? AND status='processing'`, time.Now().UTC(), job.ID)
 	if err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func refreshNodeMastery(ctx context.Context, tx *sqlx.Tx, userID, spaceID, nodeID string) error {
+	var totals struct {
+		Correct  int `db:"correct_count"`
+		Wrong    int `db:"wrong_count"`
+		Evidence int `db:"evidence_count"`
+	}
+	if err := tx.GetContext(ctx, &totals, `SELECT COALESCE(SUM(CASE WHEN f.is_correct THEN 1 ELSE 0 END),0) AS correct_count,COALESCE(SUM(CASE WHEN f.is_correct THEN 0 ELSE 1 END),0) AS wrong_count,COUNT(*) AS evidence_count FROM exam_question_feedback f JOIN exam_questions q ON q.id=f.question_id JOIN exam_pattern_node_links l ON l.pattern_id=q.pattern_id WHERE f.user_id=? AND f.learning_space_id=? AND l.node_id=?`, userID, spaceID, nodeID); err != nil {
+		return fmt.Errorf("recalculate merged node mastery: %w", err)
+	}
+	if totals.Evidence == 0 {
+		return nil
+	}
+	score := float64(totals.Correct) * 100 / float64(totals.Evidence)
+	status := "learning"
+	if score < 50 {
+		status = "weak"
+	} else if score >= 80 && totals.Evidence >= 2 {
+		status = "mastered"
+	}
+	confidence := min(float64(totals.Evidence)/5, 1)
+	_, err := tx.ExecContext(ctx, `INSERT INTO user_node_states(user_id,learning_space_id,node_id,mastery_score,mastery_status,correct_count,wrong_count,evidence_count,confidence,last_evaluated_at) VALUES(?,?,?,?,?,?,?,?,?,NOW(6)) ON DUPLICATE KEY UPDATE mastery_score=VALUES(mastery_score),mastery_status=VALUES(mastery_status),correct_count=VALUES(correct_count),wrong_count=VALUES(wrong_count),evidence_count=VALUES(evidence_count),confidence=VALUES(confidence),last_evaluated_at=VALUES(last_evaluated_at)`, userID, spaceID, nodeID, score, status, totals.Correct, totals.Wrong, totals.Evidence, confidence)
+	if err != nil {
+		return fmt.Errorf("save merged node mastery: %w", err)
+	}
+	return nil
 }
 
 func (r *LearningAssetRepository) PlanSources(ctx context.Context, userID, spaceID string) ([]ai.PlanSource, error) {

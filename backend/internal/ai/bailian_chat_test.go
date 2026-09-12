@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +135,61 @@ func TestBailianChatGeneratePlanValidatesBudget(t *testing.T) {
 	_, err = provider.GeneratePlan(context.Background(), PlanContext{Goal: "通过考试", DailyMinutes: 30}, []PlanSource{{NodeID: "node", Name: "TCP"}}, nil)
 	if err == nil {
 		t.Fatal("expected over-budget plan error")
+	}
+}
+
+func TestBailianChatGenerateKnowledgeNormalizesToPeerLevelNodes(t *testing.T) {
+	provider, err := NewBailianChat("https://example.test", "secret", "qwen-plus", "qwen-flash", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	provider.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		var request chatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if calls == 1 {
+			return jsonResponse(http.StatusOK, `{"choices":[{"message":{"content":"{\"nodes\":[{\"name\":\"TCP\",\"description\":\"传输层协议\",\"sourceChunkID\":\"chunk-1\",\"examWeight\":0.8,\"estimatedMinutes\":30},{\"name\":\"TIME_WAIT\",\"description\":\"连接释放状态\",\"sourceChunkID\":\"chunk-1\",\"examWeight\":0.7,\"estimatedMinutes\":20}],\"edges\":[{\"from\":0,\"to\":1,\"relationType\":\"related\"}],\"articles\":[{\"node\":0,\"title\":\"TCP\",\"body\":\"总览\",\"sourceChunkID\":\"chunk-1\"},{\"node\":1,\"title\":\"TIME_WAIT\",\"body\":\"状态说明\",\"sourceChunkID\":\"chunk-1\"}]}"}}]}`), nil
+		}
+		if calls == 3 {
+			if request.Model != "qwen-flash" || !strings.Contains(request.Messages[0].Content, "两两语义比较") {
+				t.Fatalf("unexpected granularity audit request: %+v", request)
+			}
+			return jsonResponse(http.StatusOK, `{"choices":[{"message":{"content":"{\"sameLevel\":true,\"conflicts\":[]}"}}]}`), nil
+		}
+		if !strings.Contains(request.Messages[0].Content, "同一粒度、同一层级") || !strings.Contains(request.Messages[1].Content, "TIME_WAIT") || !strings.Contains(request.Messages[1].Content, "old-time-wait") {
+			t.Fatalf("normalization request is missing the granularity audit: %+v", request.Messages)
+		}
+		return jsonResponse(http.StatusOK, `{"choices":[{"message":{"content":"{\"nodes\":[{\"name\":\"TCP 可靠传输\",\"description\":\"序号、确认与重传\",\"sourceChunkID\":\"chunk-1\",\"examWeight\":0.8,\"estimatedMinutes\":30,\"absorbedNodeIDs\":[]},{\"name\":\"TCP 连接释放\",\"description\":\"四次挥手与 TIME_WAIT\",\"sourceChunkID\":\"chunk-1\",\"examWeight\":0.7,\"estimatedMinutes\":25,\"absorbedNodeIDs\":[\"old-time-wait\"]}],\"edges\":[{\"from\":0,\"to\":1,\"relationType\":\"related\"}],\"articles\":[{\"node\":0,\"title\":\"TCP 可靠传输\",\"body\":\"可靠传输机制\",\"sourceChunkID\":\"chunk-1\"},{\"node\":1,\"title\":\"TCP 连接释放\",\"body\":\"连接释放机制\",\"sourceChunkID\":\"chunk-1\"}]}"}}]}`), nil
+	})
+
+	assets, err := provider.GenerateKnowledge(context.Background(), "复习 TCP", []AssetSource{{ChunkID: "chunk-1", Content: "TCP 资料"}}, []ExistingKnowledgeNode{{ID: "old-time-wait", Name: "TIME_WAIT", Description: "由真题识别"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 || len(assets.Nodes) != 2 || len(assets.Articles) != 2 {
+		t.Fatalf("unexpected normalized assets: calls=%d assets=%+v", calls, assets)
+	}
+	if len(assets.Nodes[1].AbsorbedNodeIDs) != 1 || assets.Nodes[1].AbsorbedNodeIDs[0] != "old-time-wait" {
+		t.Fatalf("existing exam node was not reconciled: %+v", assets.Nodes)
+	}
+	for _, edge := range assets.Edges {
+		if edge.RelationType == "contains" {
+			t.Fatalf("hierarchical edge survived normalization: %+v", edge)
+		}
+	}
+}
+
+func TestValidateKnowledgeOutputRequiresEveryExamNodeToBeReconciled(t *testing.T) {
+	var out knowledgeOutput
+	if err := json.Unmarshal([]byte(`{"nodes":[{"name":"微分学基础","description":"微分学概述","sourceChunkID":"chunk-1","examWeight":0.8,"estimatedMinutes":30,"absorbedNodeIDs":[]}],"edges":[],"articles":[{"node":0,"title":"微分学基础","body":"正文","sourceChunkID":"chunk-1"}]}`), &out); err != nil {
+		t.Fatal(err)
+	}
+	_, err := validateKnowledgeOutput(out, []AssetSource{{ChunkID: "chunk-1"}}, []ExistingKnowledgeNode{{ID: "old-differential", Name: "微分的概念"}})
+	if err == nil {
+		t.Fatal("expected an unreconciled exam node to be rejected")
 	}
 }
 

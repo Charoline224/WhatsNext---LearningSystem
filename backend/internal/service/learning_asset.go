@@ -106,12 +106,11 @@ func (s *LearningAssetService) DeleteNode(ctx context.Context, userID, spaceID, 
 	return err
 }
 
-// TODO : edge type?
 func (s *LearningAssetService) CreateEdge(ctx context.Context, userID, spaceID string, input dto.KnowledgeEdgeInput) (model.LearningEdge, error) {
 	if _, err := s.spaces.Get(ctx, userID, spaceID); err != nil {
 		return model.LearningEdge{}, ErrNotFound
 	}
-	valid := map[string]bool{"prerequisite": true, "related": true, "contains": true}
+	valid := map[string]bool{"prerequisite": true, "related": true}
 	if input.FromNodeID == "" || input.ToNodeID == "" || input.FromNodeID == input.ToNodeID || !valid[input.RelationType] {
 		return model.LearningEdge{}, ValidationError{"edge", "invalid knowledge relation"}
 	}
