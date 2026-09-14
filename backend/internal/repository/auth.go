@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"time"
 
+	"whatsnext/backend/internal/model"
+
 	"github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
-	"whatsnext/backend/internal/model"
 )
 
 type AuthRepository struct{ db *sqlx.DB }
